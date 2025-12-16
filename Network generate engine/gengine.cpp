@@ -1,9 +1,7 @@
-// 20251211
 #include <Rcpp.h>
 #include <vector>
 #include <random>
 #include <cmath>
-#include <numeric>
 #include <algorithm>
 #include <set>
 
@@ -13,103 +11,44 @@ using namespace Rcpp;
 std::random_device rd;
 std::mt19937 gen(rd());
 
-// --- ヘルパー関数群 ---
+// --- ヘルパー関数 ---
 
-// 1. Generalized PA
-int select_generalized_pa(int n_current, const std::vector<int>& degrees, 
-                          const std::vector<int>& capacity, 
-                          double alpha, const std::vector<int>& degree_bag) {
+// Generalized PA (Rejection Sampling)
+int select_gpa(int n_current, const std::vector<int>& degrees, 
+               const std::vector<int>& capacity, 
+               double alpha, const std::vector<int>& degree_bag) {
     if (degree_bag.empty()) return 0;
-    
     int max_trials = 10;
     for (int t = 0; t < max_trials; ++t) {
         std::uniform_int_distribution<> bag_dis(0, degree_bag.size() - 1);
         int cand = degree_bag[bag_dis(gen)];
-        
-        if (degrees[cand] >= capacity[cand]) continue;
-        
+        if (degrees[cand] >= capacity[cand]) continue; // 定員チェック
         if (std::abs(alpha - 1.0) > 0.01) {
             double p_accept = std::pow((double)degrees[cand], alpha - 1.0);
-            if (std::uniform_real_distribution<>(0.0, 1.0)(gen) > p_accept) continue; 
+            if (std::uniform_real_distribution<>(0.0, 1.0)(gen) > p_accept) continue;
         }
         return cand;
     }
+    // フォールバック: 完全ランダム
     std::uniform_int_distribution<> rand_dis(0, n_current - 1);
     return rand_dis(gen);
 }
 
-// 2. Forest Fire
-void process_forest_fire(int new_node, double p_burn, 
-                         std::vector<std::vector<int>>& adj, 
-                         std::vector<int>& degrees,
-                         std::vector<int>& degree_bag) {
-    int n_current = new_node; 
-    std::uniform_int_distribution<> dis(0, n_current - 1);
-    int ambassador = dis(gen); 
-
-    // FFは複数エッジを張るため、ここでも重複チェックをするのが理想だが
-    // 計算コストと「燃え広がり」の性質上、簡易的に済ませる
-    // (ただし自己ループだけは避ける)
-    if (ambassador == new_node) return;
-
-    // 接続1 (大使)
-    bool connected = false;
-    for(int existing : adj[new_node]) if(existing == ambassador) connected = true;
-    
-    if (!connected) {
-        adj[new_node].push_back(ambassador);
-        adj[ambassador].push_back(new_node);
-        degrees[new_node]++; degrees[ambassador]++;
-        degree_bag.push_back(new_node); degree_bag.push_back(ambassador);
-    }
-
-    if (adj[ambassador].empty()) return;
-    
-    std::geometric_distribution<> geom(1.0 - p_burn);
-    int n_spread = geom(gen);
-    
-    if (n_spread > 0) {
-        std::vector<int> targets = adj[ambassador];
-        std::shuffle(targets.begin(), targets.end(), gen);
-        int count = 0;
-        for(int t : targets) {
-            if (t == new_node) continue;
-            
-            // 重複チェック
-            bool already = false;
-            for(int existing : adj[new_node]) if(existing == t) already = true;
-            if(already) continue;
-
-            adj[new_node].push_back(t);
-            adj[t].push_back(new_node);
-            degrees[new_node]++; degrees[t]++;
-            degree_bag.push_back(new_node); degree_bag.push_back(t);
-
-            count++;
-            if(count >= n_spread) break;
-        }
-    }
-}
-
-// 3. Neighbor Strength
-int select_neighbor_strength(const std::vector<std::vector<int>>& adj, 
-                             const std::vector<int>& degree_bag) {
+// Neighbor Strength
+int select_ns(const std::vector<std::vector<int>>& adj, const std::vector<int>& degree_bag) {
     if (degree_bag.empty()) return 0;
     std::uniform_int_distribution<> bag_dis(0, degree_bag.size() - 1);
     int hub = degree_bag[bag_dis(gen)];
-    
     if (adj[hub].empty()) return hub;
     std::uniform_int_distribution<> neigh_dis(0, adj[hub].size() - 1);
     return adj[hub][neigh_dis(gen)];
 }
 
-// 4. MA & 5. TRA はメインループ内でロジック処理するため関数化しない
-
-// 6. ADM
+// ADM
 int select_adm(int n_current, const std::vector<int>& degrees, bool assortative) {
     int best_cand = -1;
     int best_score = assortative ? 100000 : -1;
-    for(int i=0; i<5; ++i) {
+    for(int i=0; i<5; ++i) { // 候補数5
         std::uniform_int_distribution<> dis(0, n_current - 1);
         int cand = dis(gen);
         int deg = degrees[cand];
@@ -122,40 +61,95 @@ int select_adm(int n_current, const std::vector<int>& degrees, bool assortative)
     return best_cand;
 }
 
+// Forest Fire (戻り値: 追加されたエッジ数)
+int process_forest_fire(int new_node, double p_burn, 
+                        std::vector<std::vector<int>>& adj, 
+                        std::vector<int>& degrees,
+                        std::vector<int>& degree_bag) {
+    int n_current = new_node;
+    std::uniform_int_distribution<> dis(0, n_current - 1);
+    int ambassador = dis(gen);
+    
+    if (ambassador == new_node) return 0;
+
+    int edges_added = 0;
+
+    // 大使との接続
+    bool connected = false;
+    for(int ex : adj[new_node]) if(ex == ambassador) connected = true;
+    if (!connected) {
+        adj[new_node].push_back(ambassador);
+        adj[ambassador].push_back(new_node);
+        degrees[new_node]++; degrees[ambassador]++;
+        degree_bag.push_back(new_node); degree_bag.push_back(ambassador);
+        edges_added++;
+    }
+
+    if (adj[ambassador].empty()) return edges_added;
+
+    // 燃え広がり
+    std::geometric_distribution<> geom(1.0 - p_burn);
+    int n_spread = geom(gen);
+    
+    if (n_spread > 0) {
+        std::vector<int> targets = adj[ambassador];
+        std::shuffle(targets.begin(), targets.end(), gen);
+        int count = 0;
+        for(int t : targets) {
+            if (t == new_node) continue;
+            bool already = false;
+            for(int ex : adj[new_node]) if(ex == t) already = true;
+            if (already) continue;
+
+            adj[new_node].push_back(t);
+            adj[t].push_back(new_node);
+            degrees[new_node]++; degrees[t]++;
+            degree_bag.push_back(new_node); degree_bag.push_back(t);
+            edges_added++;
+            count++;
+            if(count >= n_spread) break;
+        }
+    }
+    return edges_added;
+}
+
 // --- メイン関数 ---
 // [[Rcpp::export]]
 List netmix_core(int n_target, NumericVector probs, NumericVector params) {
-    // パラメータ展開
+    
+    // 確率: [GPA, FF, NS, MA, TRA, ADM]
     double p_gpa = probs[0];
     double p_ff  = probs[1];
     double p_ns  = probs[2];
     double p_ma  = probs[3];
     double p_tra = probs[4];
+    double p_adm = probs[5];
     
+    // パラメータ
     double alpha   = params[0];
     double beta    = params[1];
     int    m       = (int)std::round(params[2]); if(m<1) m=1;
     double p_burn  = params[3];
-    int    K       = (int)std::round(params[4]); if(K<1) K=1; // TRAでは使わないが引数互換性のため残す
+    // KはTRAでは直接使わないが互換性のため維持
     bool   is_assort = (params[5] > 0.5); 
+
+    // FF以外の確率を再正規化 (Growth Step用)
+    double sum_growth = p_gpa + p_ns + p_ma + p_tra + p_adm;
+    if (sum_growth < 1e-9) sum_growth = 1.0; // avoid div0
 
     std::vector<std::vector<int>> adj(n_target);
     std::vector<int> degrees(n_target, 0);
     std::vector<int> capacity(n_target);
     std::vector<int> degree_bag; 
     
-    // igraph用
-    std::vector<int> from, to;
-
-    // 初期化
+    // 初期化 (0-1)
     adj[0].push_back(1); adj[1].push_back(0);
     degrees[0]=1; degrees[1]=1;
     degree_bag.push_back(0); degree_bag.push_back(1);
-    // from/toへの追加は最後のエッジリスト構築でまとめて行うか、逐次行う。
-    // ここでは逐次行う
-    from.push_back(1); to.push_back(2);
 
     std::uniform_real_distribution<> runif(0.0, 1.0);
+    
+    // 定員設定
     for(int i=0; i<n_target; ++i) {
         double u = runif(gen);
         double cap = (double)m / std::pow(u, 1.0/beta); 
@@ -163,120 +157,119 @@ List netmix_core(int n_target, NumericVector probs, NumericVector params) {
         capacity[i] = (int)cap;
     }
 
-    // 生成ループ
     for (int i = 2; i < n_target; ++i) {
-        double dice = runif(gen);
-        double cum = 0.0;
-        
-        // Forest Fire
-        cum += p_ff;
-        if (dice < cum) {
-            // FFは内部でエッジ追加処理を行う(from/toは今回は省略、adjのみ更新して最後に変換する方が安全だが、
-            // 既存コードとの互換性のため、ここではadjのみ更新し、戻り値構築時にadjから全エッジを生成する方式に変更する)
-            // ★重要: 重複排除を確実にするため、from/toは最後にadjから一括生成します。
-            process_forest_fire(i, p_burn, adj, degrees, degree_bag);
-            continue; 
+        // Step 1: Forest Fire かどうか？
+        bool is_ff_step = false;
+        if (runif(gen) < p_ff) is_ff_step = true;
+
+        int added_count = 0;
+
+        if (is_ff_step) {
+            added_count = process_forest_fire(i, p_burn, adj, degrees, degree_bag);
         }
 
-        // --- MA用のプロトタイプ固定 ---
-        // このノード生成ステップの間、ずっと同じプロトタイプを使う
+        // Step 2: 不足分を埋める (Growth Step or Filler)
+        // FFで足りなかった場合、またはFFじゃなかった場合、合計m本になるまで追加する
+        int needed = m - added_count;
+        if (needed <= 0) continue; // 十分足りてるなら次へ
+
+        // Growth Step用の準備
         int ma_prototype = -1;
-        if (degree_bag.size() > 0) {
+        if (!degree_bag.empty()) {
              std::uniform_int_distribution<> dis(0, degree_bag.size() - 1);
-             ma_prototype = degree_bag[dis(gen)]; // 次数比例でプロトタイプを選ぶとより効果的
+             ma_prototype = degree_bag[dis(gen)];
         }
+        std::vector<int> step_targets; // このステップで接続した相手リスト(TRA用)
 
-        // --- 今回追加した接続先を記録するリスト (TRA用) ---
-        std::vector<int> current_targets;
-
-        for (int k = 0; k < m; ++k) {
+        for (int k = 0; k < needed; ++k) {
             int target = -1;
-            int max_retries = 5; // 重複回避のためのリトライ回数
+            int retries = 0;
             
-            for(int retry = 0; retry < max_retries; ++retry) {
-                target = -1;
-                dice = runif(gen); // 毎回サイコロを振る(プロセス混合)
-                cum = 0.0; // リセット
+            while (target == -1 && retries < 5) {
+                retries++;
+                double r = runif(gen) * sum_growth;
+                double cum = 0.0;
 
+                // --- ルーレット選択 ---
+                
                 // 1. GPA
-                if (target == -1) { cum += p_gpa; if (dice < cum) target = select_generalized_pa(i, degrees, capacity, alpha, degree_bag); }
-                
+                cum += p_gpa;
+                if (target == -1 && r < cum) {
+                    target = select_gpa(i, degrees, capacity, alpha, degree_bag);
+                }
+
                 // 2. NS
-                if (target == -1) { cum += p_ns;  if (dice < cum) target = select_neighbor_strength(adj, degree_bag); }
-                
-                // 3. MA (固定プロトタイプ版)
-                if (target == -1) { 
-                    cum += p_ma;  
-                    if (dice < cum) {
-                        if (ma_prototype != -1 && !adj[ma_prototype].empty()) {
-                            std::uniform_int_distribution<> neigh_dis(0, adj[ma_prototype].size() - 1);
-                            target = adj[ma_prototype][neigh_dis(gen)];
+                cum += p_ns;
+                if (target == -1 && r < cum) {
+                    target = select_ns(adj, degree_bag);
+                }
+
+                // 3. MA (Sticky)
+                cum += p_ma;
+                if (target == -1 && r < cum) {
+                     if (ma_prototype != -1) {
+                        if (!adj[ma_prototype].empty()) {
+                            std::uniform_int_distribution<> nd(0, adj[ma_prototype].size()-1);
+                            target = adj[ma_prototype][nd(gen)];
                         } else {
                             target = ma_prototype;
                         }
-                    } 
+                     } else {
+                         target = select_gpa(i, degrees, capacity, alpha, degree_bag);
+                     }
                 }
-                
-                // 4. TRA (三角形閉包版 - Triangle Closure)
-                // 「さっき繋いだ相手(current_targets)」の隣人と繋ぐ
-                if (target == -1) { 
-                    cum += p_tra; 
-                    if (dice < cum) {
-                        if (!current_targets.empty()) {
-                            // さっき繋いだ相手をランダムに選ぶ
-                            std::uniform_int_distribution<> cur_dis(0, current_targets.size() - 1);
-                            int u = current_targets[cur_dis(gen)];
-                            if (!adj[u].empty()) {
-                                std::uniform_int_distribution<> neigh_dis(0, adj[u].size() - 1);
-                                target = adj[u][neigh_dis(gen)];
-                            }
-                        } else {
-                            // まだ誰も繋いでないなら、仕方ないのでGPAかMAで代替
-                            target = select_generalized_pa(i, degrees, capacity, alpha, degree_bag);
+
+                // 4. TRA (Strong Triangle Closure)
+                cum += p_tra;
+                if (target == -1 && r < cum) {
+                    // さっき繋いだ相手(step_targets)がいれば、その隣人を狙う
+                    if (!step_targets.empty()) {
+                        std::uniform_int_distribution<> sd(0, step_targets.size() - 1);
+                        int u = step_targets[sd(gen)];
+                        if (!adj[u].empty()) {
+                            std::uniform_int_distribution<> nd(0, adj[u].size() - 1);
+                            target = adj[u][nd(gen)];
                         }
                     } 
-                }
-                
-                // 5. ADM
-                if (target == -1) { target = select_adm(i, degrees, is_assort); }
-                
-                // 自己ループ回避
-                if (target == i) target = -1;
-
-                // 重複回避 (既に繋がっているならやり直し)
-                if (target != -1) {
-                    bool already_connected = false;
-                    for (int existing : adj[i]) {
-                        if (existing == target) { already_connected = true; break; }
+                    // もしいなければ、GPAで「起点」を作る
+                    if (target == -1) {
+                        target = select_gpa(i, degrees, capacity, alpha, degree_bag);
                     }
-                    if (already_connected) target = -1; // リトライへ
                 }
 
-                if (target != -1) break; // 成功！ループを抜ける
+                // 5. ADM
+                cum += p_adm;
+                if (target == -1 && r <= cum + 1e-9) { // 浮動小数点誤差対策
+                    target = select_adm(i, degrees, is_assort);
+                }
+
+                // --- チェック ---
+                if (target == i) { target = -1; continue; } // 自己ループ
+                for(int ex : adj[i]) if(ex == target) { target = -1; break; } // 重複
             }
 
-            // リトライしてもダメなら諦めてランダム接続 (次数確保のため)
+            // フォールバック (諦めてランダム)
             if (target == -1) {
-                 std::uniform_int_distribution<> r_dis(0, i - 1);
-                 target = r_dis(gen);
-                 // それでも重複する可能性はあるが、これ以上はコスト高なので許容
+                std::uniform_int_distribution<> rd(0, i - 1);
+                target = rd(gen);
+                // ここでの重複は許容する(稀なので)
             }
 
-            // 接続処理
+            // 接続確定
             adj[i].push_back(target);
             adj[target].push_back(i);
             degrees[i]++; degrees[target]++;
             degree_bag.push_back(i); degree_bag.push_back(target);
             
-            current_targets.push_back(target); // TRA用に記録
+            step_targets.push_back(target);
         }
     }
 
-    // 最後に adj から from/to を一括生成 (これが最も安全で正確)
-    from.clear(); to.clear();
+    // エッジリスト変換
+    std::vector<int> from, to;
     for(int i=0; i<n_target; ++i) {
         for(int neighbor : adj[i]) {
-            if (i < neighbor) { // 重複防止 (i < j のペアのみ保存)
+            if (i < neighbor) {
                 from.push_back(i + 1);
                 to.push_back(neighbor + 1);
             }
