@@ -1,16 +1,16 @@
 # ---------------------------------------------------------
-# optimizer_GA.R (GA parallel version)
+# optimizer.R (GA Serial version)
+# 並列化なし
 # ---------------------------------------------------------
 library(GA)
 library(ranger)
-library(parallel)
 
 # --- 1. 代理モデルの読み込み ---
 if (!exists("surrogate_models")) {
   if (file.exists("surrogate_models_ranger.rds")) {
     surrogate_models <- readRDS("surrogate_models_ranger.rds")
   } else {
-    stop("エラー: 'surrogate_models_ranger.rds' が見つかりません。")
+    stop("エラー: 'surrogate_models_ranger.rds' が見つかりません。step3を実行してください。")
   }
 }
 
@@ -74,18 +74,18 @@ run_netmix_optimization <- function(target_metrics) {
     return(-total_error) # GAは最大化を目指すのでマイナスにする
   }
   
-  # --- GA実行 (並列化) ---
-  cat("GAによる並列最適化を開始します... (数分かかる場合があります)\n")
+  # --- GA実行 (直列処理) ---
+  cat("GAによる最適化を開始します... (直列処理)\n")
   
   ga_res <- ga(
     type = "real-valued",
     fitness = fitness_func,
     lower = lower_bound,
     upper = upper_bound,
-    popSize = 200,    # 個体数 (多いほど高精度)
+    popSize = 200,    # 個体数
     maxiter = 500,    # 世代数
     run = 50,         # 早期終了判定
-    parallel = TRUE,  # ★全コア使用★
+    parallel = FALSE, # ★ここをFALSEに変更しました★
     monitor = TRUE,
     optim = TRUE,     # 局所探索あり
     seed = 123
