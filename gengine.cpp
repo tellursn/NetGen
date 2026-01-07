@@ -7,13 +7,11 @@
 
 using namespace Rcpp;
 
-// 乱数生成器
+// 乱数生成
 std::random_device rd;
 std::mt19937 gen(rd());
 
-// --- ヘルパー関数 ---
-
-// Generalized PA (Rejection Sampling)
+// Generalized PA 
 int select_gpa(int n_current, const std::vector<int>& degrees, 
                const std::vector<int>& capacity, 
                double alpha, const std::vector<int>& degree_bag) {
