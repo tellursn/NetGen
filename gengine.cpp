@@ -59,7 +59,7 @@ int select_adm(int n_current, const std::vector<int>& degrees, bool assortative)
     return best_cand;
 }
 
-// Forest Fire (戻り値: 追加されたエッジ数)
+// Forest Fire
 int process_forest_fire(int new_node, double p_burn, 
                         std::vector<std::vector<int>>& adj, 
                         std::vector<int>& degrees,
