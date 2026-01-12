@@ -38,7 +38,7 @@ run_netmix_optimization <- function(target_metrics) {
     # パラメータ (整数化)
     alpha <- x[7]
     beta  <- x[8]
-    m     <- round(x[9])
+    m     <- (x[9])
     K     <- round(x[10])
     is_assort <- round(x[11])
     
