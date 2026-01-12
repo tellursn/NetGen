@@ -10,5 +10,7 @@ source("test_GA.R")
 
 ## directed
 ```
-source("training_directed/R")
+source("training_directed.R")
+source("surrogate_model.R")
+source("test_GA_directed.R")
 ```
