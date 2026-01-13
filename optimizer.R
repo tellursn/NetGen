@@ -35,7 +35,7 @@ run_netmix_optimization <- function(target_metrics) {
     if(sum(w_probs) < 1e-9) return(-1e9)
     norm_probs <- w_probs / sum(w_probs)
     
-    # パラメータ (整数化)
+    # パラメータ
     alpha <- x[7]
     beta  <- x[8]
     m     <- (x[9])
